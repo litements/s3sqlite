@@ -1,0 +1,11 @@
+# Ignore everything
+*
+
+# But not these files...
+!.gitignore
+!s3sqlite.py
+!test.py
+!requirements.txt
+!setup.py
+!stop-minio.sh
+!start-minio.sh
