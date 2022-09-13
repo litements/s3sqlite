@@ -3,6 +3,8 @@
 set -euo pipefail
 
 docker run \
+  --rm \
+  --name s3sqlite-minio \
   -p 9000:9000 \
   -p 9001:9001 \
   -e "MINIO_ROOT_USER=AKIAIDIDIDIDIDIDIDID" \
