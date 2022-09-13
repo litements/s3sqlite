@@ -96,9 +96,7 @@ class S3VFS(apsw.VFS):
         return S3VFSFile(f=ofile, name=fname, flags=flags, block_size=self._block_size)
 
     def upload_file(self, dbfile, dest):
-        with open(dbfile, "rb") as _dbf:
-            with self.fs.open(dest, "wb") as _s3f:
-                _s3f.write(_dbf.read())
+        self.fs.upload(dbfile, dest)
 
 
 class S3VFSFile(apsw.VFSFile):
@@ -124,7 +122,7 @@ class S3VFSFile(apsw.VFSFile):
         return True
 
     def xDeviceCharacteristics(self):
-        logger.debug("Calling xDeviceCharact")
+        logger.debug("Calling xDeviceCharacteristics")
         return 4096
 
     def xCheckReservedLock(self):
