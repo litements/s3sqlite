@@ -123,7 +123,7 @@ def s3vfs(s3_data):
         client_kwargs={"endpoint_url": s3_data["endpoint_url"]},
     )
 
-    yield s3sqlite.AbstractVFS(name="s3-vfs", fs=s3)
+    yield s3sqlite.S3VFS(name="s3-vfs", fs=s3)
 
 
 @pytest.fixture
@@ -134,7 +134,7 @@ def local_fs():
 
 @pytest.fixture
 def localvfs(local_fs):
-    return s3sqlite.AbstractVFS(name="local-vfs", fs=local_fs)
+    return s3sqlite.S3VFS(name="local-vfs", fs=local_fs)
 
 
 @contextmanager

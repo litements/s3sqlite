@@ -56,7 +56,7 @@ def convert_flags(flags):
         raise ValueError(flags)
 
 
-class AbstractVFS(apsw.VFS):
+class S3VFS(apsw.VFS):
     def __init__(self, name: str, fs: s3fs.S3FileSystem, block_size=4096):
         self.name = f"{name}-{str(uuid.uuid4())}"
         self.fs = fs
@@ -93,9 +93,7 @@ class AbstractVFS(apsw.VFS):
 
         ofile = self.fs.open(fname, mode="rb")
 
-        return AbstractVFSFile(
-            f=ofile, name=fname, flags=flags, block_size=self._block_size
-        )
+        return S3VFSFile(f=ofile, name=fname, flags=flags, block_size=self._block_size)
 
     def upload_file(self, dbfile, dest):
         with open(dbfile, "rb") as _dbf:
@@ -103,7 +101,7 @@ class AbstractVFS(apsw.VFS):
                 _s3f.write(_dbf.read())
 
 
-class AbstractVFSFile(apsw.VFSFile):
+class S3VFSFile(apsw.VFSFile):
     def __init__(self, f: s3fs.S3File, name, flags, block_size):
         self._block_size = block_size
         self.f = f
