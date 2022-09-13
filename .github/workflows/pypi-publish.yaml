@@ -1,5 +1,5 @@
 name: Publish Python distribution to PyPI
-on: [push, pull_request]
+on: [push]
 jobs:
   build-n-publish:
     name: Build and publish Python distributions to PyPI
