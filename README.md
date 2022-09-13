@@ -93,9 +93,18 @@ python3 -m pytest test.py
 
 - [sqlite-s3vfs](https://github.com/uktrade/sqlite-s3vfs): This VFS stores the
   SQLite file as separate DB pages. This enables having a single writer without
-  having to overwrite the whole file.
+  having to overwrite the whole file. `s3sqlite`'s main difference is that this
+  just needs uploading a single file to S3. `sqlite-s3vfs` will split the
+  database in pages and upload the pages separately to a bucket prefix. Having
+  just a single file has some advantages, like making use of object [versioning
+  in the
+  bucket](https://s3fs.readthedocs.io/en/latest/index.html?highlight=version#bucket-version-awareness).
+  I also think that relying on
+  [s3fs](https://s3fs.readthedocs.io/en/latest/index.html) makes the VFS more
+  [flexible](https://s3fs.readthedocs.io/en/latest/index.html#s3-compatible-storage)
+  than calling `boto3` as `sqlite3-s3vfs` does.
 - [sqlite-s3-query](https://github.com/michalc/sqlite-s3-query): This VFS is very
-  similar to s3sqlite, but this uses directly `ctypes` to create the VFS and uses
+  similar to `s3sqlit`, but it uses `ctypes` directly to create the VFS and uses
   `httpx` to make requests to S3.
 
 I decided to create a new VFS that didn't require using `ctypes` so that it's
