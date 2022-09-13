@@ -3,8 +3,9 @@
 > Query SQLite databases in S3 using s3fs
 
 [APSW](https://rogerbinns.github.io/apsw/) SQLite VFS. This VFS enables reading
-databases from S3. This only supports reading operations, any operation that
-tries to modify the DB file is ignored.
+databases from S3 using
+[s3fs](https://s3fs.readthedocs.io/en/latest/index.html). This only supports
+reading operations, any operation that tries to modify the DB file is ignored.
 
 Inspired by [sqlite-s3vfs](https://github.com/uktrade/sqlite-s3vfs) and
 [sqlite-s3-query](https://github.com/michalc/sqlite-s3-query).
