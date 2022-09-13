@@ -1,5 +1,5 @@
 import apsw
-from fsspec.spec import AbstractBufferedFile, AbstractFileSystem
+import s3fs
 import uuid
 import logging
 import sys
@@ -57,7 +57,7 @@ def convert_flags(flags):
 
 
 class AbstractVFS(apsw.VFS):
-    def __init__(self, name: str, fs: AbstractFileSystem, block_size=4096):
+    def __init__(self, name: str, fs: s3fs.S3FileSystem, block_size=4096):
         self.name = f"{name}-{str(uuid.uuid4())}"
         self.fs = fs
         self._block_size = block_size
@@ -104,7 +104,7 @@ class AbstractVFS(apsw.VFS):
 
 
 class AbstractVFSFile(apsw.VFSFile):
-    def __init__(self, f: AbstractBufferedFile, name, flags, block_size):
+    def __init__(self, f: s3fs.S3File, name, flags, block_size):
         self._block_size = block_size
         self.f = f
         self.flags = flags
