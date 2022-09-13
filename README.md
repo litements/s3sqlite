@@ -47,7 +47,7 @@ s3vfs = s3sqlite.AbstractVFS(name="s3-vfs", fs=s3)
 key_prefix = "mybucket/awesome.sqlite3"
 
 # Upload the file to S3
-s3vfs.upload_file(get_db_wal[0], dest=key_prefix)
+s3vfs.upload_file("awesome.sqlite3", dest=key_prefix)
 
 # Create a database and query it
 with apsw.Connection(
