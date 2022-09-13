@@ -9,6 +9,22 @@ tries to modify the DB file is ignored.
 Inspired by [sqlite-s3vfs](https://github.com/uktrade/sqlite-s3vfs) and
 [sqlite-s3-query](https://github.com/michalc/sqlite-s3-query).
 
+## Notes about journal mode
+
+This VFS will only work when the DB file is in any journal mode that is **not**
+[WAL](https://sqlite.org/wal.html). However, it will work if you set the journal
+mode to something else just before uploading the file to S3. You can (and
+probably should) use WAL mode to generate the DB. Then you can change the
+journal mode (and the page size if you neeed) before uploading it to S3.
+
+The test suite
+[includes](https://github.com/litements/s3sqlite/blob/3719f1ce50a7b5cfae754776bc9b2c17292f8d72/test.py#L198)
+tests for that use case. Take into account that the page size can't be changed
+when the database is in WAL mode. You need to change it before setting the WAL
+mode or by setting the database to rollback journal mode. [You need to execute
+`VACUUM;` after changing the page
+size](https://www.sqlite.org/pragma.html#pragma_page_size) in a SQLite database.
+
 ## Example usage
 
 ```py
