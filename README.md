@@ -41,7 +41,7 @@ s3 = s3fs.S3FileSystem(
     client_kwargs={"endpoint_url": "http://..."},
 )
 
-s3vfs = s3sqlite.AbstractVFS(name="s3-vfs", fs=s3)
+s3vfs = s3sqlite.S3VFS(name="s3-vfs", fs=s3)
 
 # Define the S3 location
 key_prefix = "mybucket/awesome.sqlite3"
