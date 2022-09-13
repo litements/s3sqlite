@@ -13,6 +13,8 @@ Inspired by [sqlite-s3vfs](https://github.com/uktrade/sqlite-s3vfs) and
 
 ```py
 import s3fs
+import s3sqlite
+import apsw
 
 # Create an S3 filesystem. Check the s3fs docs for more examples:
 # https://s3fs.readthedocs.io/en/latest/
