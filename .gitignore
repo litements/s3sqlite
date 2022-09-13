@@ -5,8 +5,8 @@
 !.gitignore
 !s3sqlite.py
 !README.md
-!.github/
-!.github/*
+!/.github/
+!/.github/**
 !test.py
 !requirements.txt
 !setup.py
