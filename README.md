@@ -43,9 +43,7 @@ with apsw.Connection(
 ## Installation
 
 ```
-
-pip install s3sqlite
-
+https://github.com/litements/s3sqlite.git
 ```
 
 ## Run tests
