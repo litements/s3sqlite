@@ -13,6 +13,11 @@ from fsspec.implementations.local import LocalFileSystem
 
 import s3sqlite
 
+# import logging
+
+# log = logging.getLogger("s3sqlite")
+# log.setLevel(logging.DEBUG)
+
 PAGE_SIZES = [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536]
 JOURNAL_MODES = ["DELETE", "TRUNCATE", "PERSIST", "MEMORY", "OFF"]
 
@@ -115,6 +120,17 @@ def s3_data():
 
 
 # @pytest.fixture(params=BLOCK_SIZES)
+# @pytest.fixture
+# def s3vfs(s3_data):
+#     s3 = s3fs.S3FileSystem(
+#         key=s3_data["key"],
+#         secret=s3_data["secret"],
+#         client_kwargs={"endpoint_url": s3_data["endpoint_url"]},
+#     )
+
+#     yield s3sqlite.S3VFS(name="s3-vfs", fs=s3)
+
+
 @pytest.fixture
 def s3vfs(s3_data):
     s3 = s3fs.S3FileSystem(
@@ -123,7 +139,11 @@ def s3vfs(s3_data):
         client_kwargs={"endpoint_url": s3_data["endpoint_url"]},
     )
 
-    yield s3sqlite.S3VFS(name="s3-vfs", fs=s3)
+    yield s3sqlite.S3VFS(
+        name="s3-vfs",
+        fs=s3,
+        file_kwargs={"cache_type": "bytes", "cache_size": 100_000_000},
+    )
 
 
 @pytest.fixture

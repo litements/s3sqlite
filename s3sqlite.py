@@ -3,6 +3,7 @@ import s3fs
 import uuid
 import logging
 import sys
+from typing import Optional
 
 
 logger = logging.getLogger("s3sqlite")
@@ -57,10 +58,27 @@ def convert_flags(flags):
 
 
 class S3VFS(apsw.VFS):
-    def __init__(self, name: str, fs: s3fs.S3FileSystem, block_size=4096):
+    def __init__(
+        self,
+        name: str,
+        fs: s3fs.S3FileSystem,
+        block_size: int = 4096,
+        file_kwargs: Optional[dict] = None,
+    ):
+        """
+        APSW VFS to read by ranges from S3.
+
+        Args:
+          * name: S3 path of the file (bucket + prefix + filename)
+          * fs: Instance of s3fs.S3FileSystem
+          * block_size: Block size used by the filesystem.
+          * file_kwargs: Extra arguments to pass when calling the open() method of fs (s3fs)
+                         This may be useful to configure the cache strategy used by the S3FileSystem
+        """
         self.name = f"{name}-{str(uuid.uuid4())}"
         self.fs = fs
-        self._block_size = block_size
+        self.block_size = block_size
+        self.file_kwargs = file_kwargs if file_kwargs else {}
         super().__init__(name=self.name, base="")
 
     def xAccess(self, pathname, flags):
@@ -91,17 +109,31 @@ class S3VFS(apsw.VFS):
             f"Name: {self.name} fs: {self.fs}, open_name: {fname}, flags: {convert_flags(flags)}"
         )
 
-        ofile = self.fs.open(fname, mode="rb")
+        ofile = self.fs.open(
+            fname, mode="rb", block_size=self.block_size, **self.file_kwargs
+        )
 
-        return S3VFSFile(f=ofile, name=fname, flags=flags, block_size=self._block_size)
+        return S3VFSFile(
+            f=ofile,
+            name=fname,
+            flags=flags,
+        )
 
     def upload_file(self, dbfile, dest):
         self.fs.upload(dbfile, dest)
 
 
 class S3VFSFile(apsw.VFSFile):
-    def __init__(self, f: s3fs.S3File, name, flags, block_size):
-        self._block_size = block_size
+    def __init__(self, f: s3fs.S3File, name, flags):
+        """
+        VFS File object
+
+        Args:
+          * f: S3File object returned by s3fs.S3FileSystem().open()
+          * name: name of the file
+          * flags: SQLite open flags
+        """
+
         self.f = f
         self.flags = flags
         logger.debug(f"Openned AVFSFile with flags: {convert_flags(self.flags)}")
@@ -135,7 +167,7 @@ class S3VFSFile(apsw.VFSFile):
         pass
 
     def xSectorSize(self):
-        return self._block_size
+        return self.f.block_size
 
     def xClose(self):
         logger.debug("Calling file xClose")
