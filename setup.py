@@ -4,7 +4,7 @@ from pathlib import Path
 
 setuptools.setup(
     name="s3sqlite",
-    version="0.2",
+    version="0.2.1",
     author="Ricardo Ander-Egg Aguilar",
     author_email="rsubacc@gmail.com",
     description="Query SQLite databases on S3 using s3fs",
