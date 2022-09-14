@@ -103,7 +103,8 @@ python3 -m pytest test.py
   I also think that relying on
   [s3fs](https://s3fs.readthedocs.io/en/latest/index.html) makes the VFS more
   [flexible](https://s3fs.readthedocs.io/en/latest/index.html#s3-compatible-storage)
-  than calling `boto3` as `sqlite3-s3vfs` does.
+  than calling `boto3` as `sqlite3-s3vfs` does. `s3fs` should also handle
+  retries automatically.
 - [sqlite-s3-query](https://github.com/michalc/sqlite-s3-query): This VFS is very
   similar to `s3sqlit`, but it uses `ctypes` directly to create the VFS and uses
   `httpx` to make requests to S3.
