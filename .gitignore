@@ -5,6 +5,7 @@
 !.gitignore
 !s3sqlite.py
 !README.md
+!CHANGELOG.md
 !/.github/
 !/.github/**
 !test.py
