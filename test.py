@@ -157,6 +157,21 @@ def localvfs(local_fs):
     return s3sqlite.S3VFS(name="local-vfs", fs=local_fs)
 
 
+@pytest.fixture
+def smartopenvfs(s3_data):
+    client = boto3.client(
+        "s3",
+        endpoint_url=s3_data["endpoint_url"],
+        aws_access_key_id=s3_data["key"],
+        aws_secret_access_key=s3_data["secret"],
+        region_name="us-east-1",
+    )
+    yield s3sqlite.SmartOpenVFS(
+        name="smart-open-vfs",
+        file_kwargs={"transport_params": {"client": client}},
+    )
+
+
 @contextmanager
 def transaction(conn):
     conn.execute("BEGIN;")
@@ -269,6 +284,38 @@ def test_s3vfs_query(bucket, s3vfs, get_db, query):
     # Create a database and query it
     with apsw.Connection(
         key_prefix, vfs=s3vfs.name, flags=apsw.SQLITE_OPEN_READONLY
+    ) as conn:
+
+        local_c = get_db[1].execute(query)
+        c = conn.execute(query)
+        assert c.fetchall() == local_c.fetchall()
+
+
+@pytest.mark.parametrize("query", QUERIES)
+def test_smartopenvfs_query_wal(bucket, s3vfs, smartopenvfs, get_db_wal, query):
+
+    key_prefix = f"{bucket}/{dbname}"
+    s3vfs.upload_file(get_db_wal[0], dest=key_prefix)
+
+    # SmartOpenVFS requires an s3:// URI
+    with apsw.Connection(
+        f"s3://{key_prefix}", vfs=smartopenvfs.name, flags=apsw.SQLITE_OPEN_READONLY
+    ) as conn:
+
+        local_c = get_db_wal[1].execute(query)
+        c = conn.execute(query)
+        assert c.fetchall() == local_c.fetchall()
+
+
+@pytest.mark.parametrize("query", QUERIES)
+def test_smartopenvfs_query(bucket, s3vfs, smartopenvfs, get_db, query):
+
+    key_prefix = f"{bucket}/{dbname}"
+    s3vfs.upload_file(get_db[0], dest=key_prefix)
+
+    # SmartOpenVFS requires an s3:// URI
+    with apsw.Connection(
+        f"s3://{key_prefix}", vfs=smartopenvfs.name, flags=apsw.SQLITE_OPEN_READONLY
     ) as conn:
 
         local_c = get_db[1].execute(query)
