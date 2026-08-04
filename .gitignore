@@ -1,15 +1,11 @@
-# Ignore everything
-*
-
-# But not these files...
-!.gitignore
-!s3sqlite.py
-!README.md
-!CHANGELOG.md
-!/.github/
-!/.github/**
-!test.py
-!requirements.txt
-!setup.py
-!stop-minio.sh
-!start-minio.sh
+__pycache__/
+*.py[cod]
+.coverage
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv/
+*.egg-info/
+build/
+dist/
+refs/

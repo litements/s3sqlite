@@ -1,3 +1,8 @@
+## 0.3.0
+
+- Migrate packaging to uv with a `src` layout.
+- Replace the local S3 test service with single-node Garage.
+
 ## 0.2.1
 
 - Use the `block_size` when openning the file.
