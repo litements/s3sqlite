@@ -36,8 +36,13 @@ clean: ## Clean artifacts
 	@rm -rf build/ dist/ src/*.egg-info/
 
 .PHONY: test
-test: ## Run the complete test suite
-	uv run --group dev pytest
+test: ## Run regular tests followed by the verbose benchmark suite
+	uv run --group dev pytest --ignore=tests/test_benchmark.py
+	$(MAKE) test-benchmark
+
+.PHONY: test-benchmark
+test-benchmark: ## Run benchmark tests verbosely against the S3 testcontainer
+	uv run --group dev pytest tests/test_benchmark.py -vv -s
 
 .PHONY: test-docker
 test-docker: ## Run the Garage integration test suite
