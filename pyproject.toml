@@ -59,3 +59,4 @@ follow_untyped_imports = true
 check_untyped_defs = true
 no_implicit_optional = true
 cache_fine_grained = true
+exclude = ["^refs/"]

@@ -28,7 +28,7 @@ to a rollback journal mode. Run `VACUUM;` after changing the page size.
 import apsw
 import s3fs
 
-import s3sqlite
+from s3sqlite.vfs import S3VFS
 
 s3 = s3fs.S3FileSystem(
     key="somekey",
@@ -40,7 +40,7 @@ s3 = s3fs.S3FileSystem(
     config_kwargs={"s3": {"addressing_style": "path"}},
 )
 
-s3vfs = s3sqlite.S3VFS(name="s3-vfs", fs=s3)
+s3vfs = S3VFS(name="s3-vfs", fs=s3)
 database_key = "mybucket/awesome.sqlite3"
 
 s3vfs.upload_file(dbfile="awesome.sqlite3", dest=database_key)

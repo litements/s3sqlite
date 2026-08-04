@@ -16,7 +16,8 @@ import s3fs
 from botocore.config import Config
 from testcontainers.core.container import DockerContainer
 
-import s3sqlite
+from s3sqlite.vfs import S3VFS
+from s3sqlite.vfs import convert_flags
 
 PAGE_SIZES = [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536]
 JOURNAL_MODES = ["DELETE", "TRUNCATE", "PERSIST", "MEMORY", "OFF"]
@@ -162,7 +163,7 @@ def bucket(s3_client: Any) -> Iterator[str]:
 
 
 @pytest.fixture
-def s3vfs(garage: str) -> Iterator[s3sqlite.S3VFS]:
+def s3vfs(garage: str, tmp_path: Path) -> Iterator[S3VFS]:
     """Provide an S3 VFS configured for Garage range reads."""
     filesystem = s3fs.S3FileSystem(
         key=S3_ACCESS_KEY,
@@ -173,10 +174,10 @@ def s3vfs(garage: str) -> Iterator[s3sqlite.S3VFS]:
         },
         config_kwargs={"s3": {"addressing_style": "path"}},
     )
-    yield s3sqlite.S3VFS(
+    yield S3VFS(
         name="s3-vfs",
         fs=filesystem,
-        file_kwargs={"cache_type": "bytes", "cache_size": 100_000_000},
+        cache_path=tmp_path / "cache.sqlite3",
     )
 
 
@@ -270,7 +271,7 @@ def database_after_wal(
 def assert_remote_query_matches_local(
     database_case: DatabaseCase,
     database_key: str,
-    s3vfs: s3sqlite.S3VFS,
+    s3vfs: S3VFS,
     query: str,
 ) -> None:
     """Compare one query result from the remote VFS with local SQLite."""
@@ -288,7 +289,7 @@ def assert_remote_query_matches_local(
 @pytest.mark.parametrize("query", QUERIES)
 def test_s3vfs_query(
     bucket: str,
-    s3vfs: s3sqlite.S3VFS,
+    s3vfs: S3VFS,
     database: DatabaseCase,
     query: str,
 ) -> None:
@@ -307,7 +308,7 @@ def test_s3vfs_query(
 @pytest.mark.parametrize("query", QUERIES)
 def test_s3vfs_query_after_wal_transition(
     bucket: str,
-    s3vfs: s3sqlite.S3VFS,
+    s3vfs: S3VFS,
     database_after_wal: DatabaseCase,
     query: str,
 ) -> None:
@@ -325,5 +326,5 @@ def test_s3vfs_query_after_wal_transition(
 
 def test_convert_flags_formats_integer_and_list() -> None:
     """Format the flag shapes passed by APSW."""
-    assert s3sqlite.convert_flags(1) == "0x000001"
-    assert s3sqlite.convert_flags([1, 4]) == ["0x000001", "0x000004"]
+    assert convert_flags(1) == "0x000001"
+    assert convert_flags([1, 4]) == ["0x000001", "0x000004"]
