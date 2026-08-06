@@ -5,6 +5,7 @@ import sqlite3
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import apsw
 import pytest
@@ -182,7 +183,165 @@ def test_s3vfs_query_after_wal_transition(
     )
 
 
+def create_plain_database(database_path: Path) -> bytes:
+    """Create a small committed database and return its bytes."""
+    connection = sqlite3.connect(database=database_path)
+    try:
+        connection.executescript(
+            """
+            CREATE TABLE invoice (customer TEXT NOT NULL, total REAL NOT NULL);
+            INSERT INTO invoice (customer, total) VALUES
+                ('Ada', 12.50),
+                ('Grace', 50.00);
+            """
+        )
+    finally:
+        connection.close()
+    return database_path.read_bytes()
+
+
 def test_convert_flags_formats_integer_and_list() -> None:
     """Format the flag shapes passed by APSW."""
     assert convert_flags(1) == "0x000001"
     assert convert_flags([1, 4]) == ["0x000001", "0x000004"]
+
+
+def test_write_attempt_does_not_modify_remote_object(
+    bucket: str,
+    s3_client: Any,
+    s3vfs: S3VFS,
+    tmp_path: Path,
+) -> None:
+    """Reject writes and leave the remote object byte-for-byte unchanged."""
+    database_path = tmp_path / "database.sqlite3"
+    original_bytes = create_plain_database(database_path=database_path)
+    database_key = f"{bucket}/database.sqlite3"
+    s3vfs.upload_file(dbfile=database_path, dest=database_key)
+
+    with apsw.Connection(
+        filename=database_key,
+        vfs=s3vfs.name,
+        flags=apsw.SQLITE_OPEN_READWRITE,
+    ) as remote_connection:
+        with pytest.raises(OSError):
+            remote_connection.execute(
+                "INSERT INTO invoice (customer, total) VALUES ('Linus', 25.00)"
+            )
+
+    downloaded = s3_client.get_object(Bucket=bucket, Key="database.sqlite3")[
+        "Body"
+    ].read()
+    assert downloaded == original_bytes
+
+    with apsw.Connection(
+        filename=database_key,
+        vfs=s3vfs.name,
+        flags=apsw.SQLITE_OPEN_READONLY,
+    ) as remote_connection:
+        rows = remote_connection.execute(
+            "SELECT customer FROM invoice ORDER BY customer"
+        ).fetchall()
+    assert rows == [("Ada",), ("Grace",)]
+
+
+def test_xaccess_reports_object_existence(
+    bucket: str,
+    s3_client: Any,
+    s3vfs: S3VFS,
+) -> None:
+    """Report whether an object exists in the bucket."""
+    object_key = "object.sqlite3"
+    database_key = f"{bucket}/{object_key}"
+    s3_client.put_object(Bucket=bucket, Key=object_key, Body=b"not a database")
+
+    assert s3vfs.xAccess(pathname=database_key, flags=0) is True
+    assert s3vfs.xAccess(pathname=f"{bucket}/absent.sqlite3", flags=0) is False
+
+
+def test_xdelete_is_ignored(
+    bucket: str,
+    s3_client: Any,
+    s3vfs: S3VFS,
+) -> None:
+    """Ignore delete requests because the VFS is read-only."""
+    object_key = "object.sqlite3"
+    database_key = f"{bucket}/{object_key}"
+    s3_client.put_object(Bucket=bucket, Key=object_key, Body=b"not a database")
+
+    s3vfs.xDelete(filename=database_key, syncdir=False)
+
+    assert s3vfs.xAccess(pathname=database_key, flags=0) is True
+    listed = s3_client.list_objects_v2(Bucket=bucket).get("Contents", [])
+    assert [item["Key"] for item in listed] == [object_key]
+
+
+def test_upload_missing_local_file_raises(
+    bucket: str,
+    s3vfs: S3VFS,
+    tmp_path: Path,
+) -> None:
+    """Fail loudly when the local database file does not exist."""
+    missing_path = tmp_path / "missing.sqlite3"
+
+    with pytest.raises(OSError):
+        s3vfs.upload_file(dbfile=missing_path, dest=f"{bucket}/missing.sqlite3")
+
+
+def test_opening_missing_object_raises(bucket: str, s3vfs: S3VFS) -> None:
+    """Fail when the database object does not exist."""
+    database_key = f"{bucket}/absent.sqlite3"
+
+    with pytest.raises(OSError):
+        with apsw.Connection(
+            filename=database_key,
+            vfs=s3vfs.name,
+            flags=apsw.SQLITE_OPEN_READONLY,
+        ) as remote_connection:
+            remote_connection.execute("SELECT 1").fetchall()
+
+
+def test_corrupted_object_fails_to_query(
+    bucket: str,
+    s3_client: Any,
+    s3vfs: S3VFS,
+) -> None:
+    """Fail when the object is not a SQLite database."""
+    database_key = f"{bucket}/corrupt.sqlite3"
+    s3_client.put_object(
+        Bucket=bucket,
+        Key="corrupt.sqlite3",
+        Body=b"this is not a sqlite database",
+    )
+
+    with pytest.raises(apsw.NotADBError):
+        with apsw.Connection(
+            filename=database_key,
+            vfs=s3vfs.name,
+            flags=apsw.SQLITE_OPEN_READONLY,
+        ) as remote_connection:
+            remote_connection.execute("SELECT 1").fetchall()
+
+
+def test_truncated_object_fails_to_query(
+    bucket: str,
+    s3_client: Any,
+    s3vfs: S3VFS,
+    tmp_path: Path,
+) -> None:
+    """Fail when the object ends before the first database page."""
+    database_path = tmp_path / "database.sqlite3"
+    full_bytes = create_plain_database(database_path=database_path)
+    database_key = f"{bucket}/truncated.sqlite3"
+    s3_client.put_object(
+        Bucket=bucket,
+        Key="truncated.sqlite3",
+        Body=full_bytes[:100],
+    )
+
+    with pytest.raises(apsw.CorruptError):
+        with apsw.Connection(
+            filename=database_key,
+            vfs=s3vfs.name,
+            flags=apsw.SQLITE_OPEN_READONLY,
+        ) as remote_connection:
+            remote_connection.execute("SELECT customer FROM invoice").fetchall()

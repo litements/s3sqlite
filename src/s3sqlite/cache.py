@@ -158,10 +158,20 @@ class LFUCache:
 
     def _connect(self) -> sqlite3.Connection:
         """Open a configured SQLite connection and initialize its schema."""
+        if sqlite3.threadsafety != 3:
+            raise sqlite3.DatabaseError(
+                "s3sqlite requires serialized SQLite (sqlite3.threadsafety "
+                f"== 3, got {sqlite3.threadsafety})"
+            )
         connection = sqlite3.connect(
             database=str(self.path),
             isolation_level=None,
             timeout=self.busy_timeout,
+            # Reader connections are shared across whatever threads APSW uses
+            # to run SQL in serialized mode; SQLite's own mutexes serialize
+            # statement execution, so no application-level lock is needed.
+            check_same_thread=False,
+            cached_statements=0,
         )
         try:
             busy_timeout_milliseconds = int(self.busy_timeout * 1000)
@@ -176,17 +186,19 @@ class LFUCache:
 
     def _initialize_schema(self, connection: sqlite3.Connection) -> None:
         """Create the cache schema and set its SQLite schema version."""
+        version_row = connection.execute("PRAGMA user_version").fetchone()
+        if version_row is None:
+            raise sqlite3.DatabaseError("SQLite did not return user_version")
+
+        current_version = int(version_row[0])
+        if current_version > CACHE_SCHEMA_VERSION:
+            raise sqlite3.DatabaseError(
+                f"Unsupported cache schema version: {current_version}"
+            )
+        if current_version == CACHE_SCHEMA_VERSION:
+            return
+
         with _write_transaction(connection):
-            version_row = connection.execute("PRAGMA user_version").fetchone()
-            if version_row is None:
-                raise sqlite3.DatabaseError("SQLite did not return user_version")
-
-            current_version = int(version_row[0])
-            if current_version > CACHE_SCHEMA_VERSION:
-                raise sqlite3.DatabaseError(
-                    f"Unsupported cache schema version: {current_version}"
-                )
-
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS cache_blocks (
@@ -194,6 +206,16 @@ class LFUCache:
                     block_size INTEGER NOT NULL,
                     block_number INTEGER NOT NULL,
                     data BLOB NOT NULL,
+                    PRIMARY KEY (object_key, block_size, block_number)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS cache_block_usage (
+                    object_key TEXT NOT NULL,
+                    block_size INTEGER NOT NULL,
+                    block_number INTEGER NOT NULL,
                     frequency INTEGER NOT NULL,
                     last_used INTEGER NOT NULL,
                     PRIMARY KEY (object_key, block_size, block_number)
@@ -202,27 +224,31 @@ class LFUCache:
             )
             connection.execute(
                 """
-                CREATE INDEX IF NOT EXISTS cache_blocks_eviction
-                ON cache_blocks (frequency, last_used)
+                CREATE INDEX IF NOT EXISTS cache_block_usage_eviction
+                ON cache_block_usage (frequency, last_used)
                 """
             )
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS cache_state (
                     id INTEGER PRIMARY KEY CHECK (id = 1),
-                    used_bytes INTEGER NOT NULL
+                    used_bytes INTEGER NOT NULL,
+                    last_used INTEGER NOT NULL DEFAULT 0
                 )
                 """
             )
             connection.execute(
                 """
-                INSERT OR IGNORE INTO cache_state (id, used_bytes)
-                VALUES (1, COALESCE((SELECT SUM(length(data)) FROM cache_blocks), 0))
+                INSERT OR IGNORE INTO cache_state (id, used_bytes, last_used)
+                VALUES (
+                    1,
+                    COALESCE((SELECT SUM(length(data)) FROM cache_blocks), 0),
+                    COALESCE((SELECT MAX(last_used) FROM cache_block_usage), 0)
+                )
                 """
             )
 
-            if current_version == 0:
-                connection.execute(f"PRAGMA user_version = {CACHE_SCHEMA_VERSION}")
+            connection.execute(f"PRAGMA user_version = {CACHE_SCHEMA_VERSION}")
 
 
 class _LFUCacheReader:
@@ -235,16 +261,46 @@ class _LFUCacheReader:
         info: ObjectInfo,
         fetch_range: FetchRange,
     ) -> None:
-        """Create a cache reader with an owned SQLite connection."""
+        """Create a cache reader with owned read and write connections.
+
+        Reads run on ``connection``; all writes, including usage tracking and
+        store transactions, run on ``write_connection`` so that read queries
+        never share a connection with an open write transaction.
+        """
         self.cache = cache
         self.connection = connection
+        try:
+            self.write_connection = self._create_write_connection()
+        except BaseException:
+            connection.close()
+            raise
         self.info = info
         self.fetch_range = fetch_range
         self.object_key = _object_key(info)
         self.closed = False
 
     def read_at(self, offset: int, length: int) -> bytes:
-        """Return the requested range, fetching and caching missing blocks."""
+        """Return the requested range, fetching and caching missing blocks.
+
+        SQLite serializes the statements of each local database connection, so
+        a reader is used by one thread at a time (APSW may move it between
+        threads). Concurrent use of one reader is not supported: write
+        transactions on a single connection cannot overlap. Different readers
+        sharing the same cache database are safe: SQLite's own file locks and
+        the busy timeout serialize their write transactions.
+        """
+        try:
+            return self._read_at(offset=offset, length=length)
+        except sqlite3.ProgrammingError as error:
+            # A concurrent close() can tear a connection down between the
+            # closed check and a statement; SQLite surfaces that as a clean
+            # error instead of corruption, and we translate it to our own.
+            if self.closed:
+                raise ValueError("Cache reader is closed") from error
+            raise
+
+    def _read_at(self, offset: int, length: int) -> bytes:
+        """Return the requested range from SQLite and the range source."""
         if self.closed:
             raise ValueError("Cache reader is closed")
         if offset < 0:
@@ -283,64 +339,90 @@ class _LFUCacheReader:
         )
 
     def close(self) -> None:
-        """Close the reader's SQLite connection."""
+        """Close the reader's SQLite connections.
+
+        Idempotent and safe to race with ``read_at``: the closed flag is set
+        before the connections are closed, and pysqlite's deferred close
+        leaves any in-flight statement to finish cleanly.
+        """
         if self.closed:
             return
 
         self.closed = True
+        self.write_connection.close()
         self.connection.close()
+
+    def _create_write_connection(self) -> sqlite3.Connection:
+        """Open the dedicated connection used for all cache writes.
+
+        Kept separate from the read connection so that read queries never run
+        on a connection with an open write transaction. Transactions on this
+        connection serialize with other writers through SQLite's file locks
+        and the busy timeout, with no application-level lock.
+        """
+        connection = sqlite3.connect(
+            database=str(self.cache.path),
+            isolation_level=None,
+            timeout=self.cache.busy_timeout,
+            check_same_thread=False,
+            cached_statements=0,
+        )
+        try:
+            busy_timeout_milliseconds = int(self.cache.busy_timeout * 1000)
+            connection.execute(f"PRAGMA busy_timeout = {busy_timeout_milliseconds}")
+            connection.execute("PRAGMA synchronous = NORMAL")
+        except BaseException:
+            connection.close()
+            raise
+        return connection
 
     def _read_cached_blocks(
         self, first_block: int, last_block: int
     ) -> dict[int, bytes]:
-        """Read and mark cached blocks in one SQLite write transaction."""
-        cached_blocks: dict[int, bytes] = {}
-        with _write_transaction(self.connection):
-            rows = self.connection.execute(
+        """Return cached blocks, marking each returned block as used."""
+        rows = self.connection.execute(
+            """
+            SELECT block_number, data
+            FROM cache_blocks
+            WHERE object_key = ?
+              AND block_size = ?
+              AND block_number BETWEEN ? AND ?
+            """,
+            (
+                self.object_key,
+                self.cache.block_size,
+                first_block,
+                last_block,
+            ),
+        ).fetchall()
+        if not rows:
+            return {}
+
+        cached_blocks = {
+            int(block_number): self._validate_block(
+                block_number=int(block_number),
+                data=data,
+            )
+            for block_number, data in rows
+        }
+        next_last_used = self._next_last_used()
+        for block_number in sorted(cached_blocks):
+            next_last_used += 1
+            self.write_connection.execute(
                 """
-                SELECT block_number, data
-                FROM cache_blocks
+                UPDATE cache_block_usage
+                SET frequency = frequency + 1, last_used = ?
                 WHERE object_key = ?
                   AND block_size = ?
-                  AND block_number BETWEEN ? AND ?
+                  AND block_number = ?
                 """,
                 (
+                    next_last_used,
                     self.object_key,
                     self.cache.block_size,
-                    first_block,
-                    last_block,
+                    block_number,
                 ),
-            ).fetchall()
-
-            if rows:
-                next_last_used = self._next_last_used()
-                for block_number, data in rows:
-                    block_number = int(block_number)
-                    block_data = self._validate_block(
-                        block_number=block_number,
-                        data=data,
-                    )
-                    next_last_used += 1
-                    update_cursor = self.connection.execute(
-                        """
-                        UPDATE cache_blocks
-                        SET frequency = frequency + 1, last_used = ?
-                        WHERE object_key = ?
-                          AND block_size = ?
-                          AND block_number = ?
-                        """,
-                        (
-                            next_last_used,
-                            self.object_key,
-                            self.cache.block_size,
-                            block_number,
-                        ),
-                    )
-                    if update_cursor.rowcount != 1:
-                        raise sqlite3.DatabaseError(
-                            f"Cached block disappeared: {block_number}"
-                        )
-                    cached_blocks[block_number] = block_data
+            )
 
         return cached_blocks
 
@@ -381,8 +463,8 @@ class _LFUCacheReader:
         if not blocks:
             return
 
-        with _write_transaction(self.connection):
-            used_bytes = self._used_bytes()
+        with _write_transaction(self.write_connection):
+            used_bytes = self._used_bytes(self.write_connection)
             next_last_used = self._next_last_used()
             for block_number in sorted(blocks):
                 block_data = blocks[block_number]
@@ -390,77 +472,118 @@ class _LFUCacheReader:
                     continue
 
                 candidate_last_used = next_last_used + 1
-                insert_cursor = self.connection.execute(
+                insert_cursor = self.write_connection.execute(
                     """
                     INSERT OR IGNORE INTO cache_blocks (
                         object_key,
                         block_size,
                         block_number,
-                        data,
-                        frequency,
-                        last_used
-                    ) VALUES (?, ?, ?, ?, 1, ?)
+                        data
+                    ) VALUES (?, ?, ?, ?)
                     """,
                     (
                         self.object_key,
                         self.cache.block_size,
                         block_number,
                         sqlite3.Binary(block_data),
-                        candidate_last_used,
                     ),
                 )
                 if insert_cursor.rowcount == 1:
                     next_last_used = candidate_last_used
                     used_bytes += len(block_data)
+                    self.write_connection.execute(
+                        """
+                        INSERT OR IGNORE INTO cache_block_usage (
+                            object_key,
+                            block_size,
+                            block_number,
+                            frequency,
+                            last_used
+                        ) VALUES (?, ?, ?, 1, ?)
+                        """,
+                        (
+                            self.object_key,
+                            self.cache.block_size,
+                            block_number,
+                            candidate_last_used,
+                        ),
+                    )
 
             used_bytes = self._evict(used_bytes=used_bytes)
-            self.connection.execute(
+            self.write_connection.execute(
                 "UPDATE cache_state SET used_bytes = ? WHERE id = 1",
                 (used_bytes,),
             )
 
     def _enforce_cache_limit(self) -> None:
         """Evict existing blocks when this reader has a smaller size limit."""
-        with _write_transaction(self.connection):
-            used_bytes = self._used_bytes()
+        if self._used_bytes(self.connection) <= self.cache.max_size:
+            return
+
+        with _write_transaction(self.write_connection):
+            used_bytes = self._used_bytes(self.write_connection)
             if used_bytes > self.cache.max_size:
                 used_bytes = self._evict(used_bytes=used_bytes)
-                self.connection.execute(
+                self.write_connection.execute(
                     "UPDATE cache_state SET used_bytes = ? WHERE id = 1",
                     (used_bytes,),
                 )
 
     def _evict(self, used_bytes: int) -> int:
         """Evict blocks in LFU order until the configured byte limit is met."""
-        if used_bytes <= self.cache.max_size:
+        over = used_bytes - self.cache.max_size
+        if over <= 0:
             return used_bytes
 
-        rows = self.connection.execute(
+        deleted_rows = self.write_connection.execute(
             """
-            SELECT object_key, block_size, block_number, length(data)
-            FROM cache_blocks
-            ORDER BY frequency, last_used, object_key, block_size, block_number
-            """
-        ).fetchall()
-        for object_key, block_size, block_number, data_length in rows:
-            if used_bytes <= self.cache.max_size:
-                break
-
-            delete_cursor = self.connection.execute(
-                """
-                DELETE FROM cache_blocks
-                WHERE object_key = ? AND block_size = ? AND block_number = ?
-                """,
-                (object_key, block_size, block_number),
+            WITH eviction_order AS (
+                SELECT
+                    usage.object_key,
+                    usage.block_size,
+                    usage.block_number,
+                    length(blocks.data) AS data_length,
+                    SUM(length(blocks.data)) OVER (
+                        ORDER BY usage.frequency, usage.last_used,
+                                 usage.object_key, usage.block_size,
+                                 usage.block_number
+                    ) AS cumulative
+                FROM cache_block_usage AS usage
+                JOIN cache_blocks AS blocks
+                  ON blocks.object_key = usage.object_key
+                 AND blocks.block_size = usage.block_size
+                 AND blocks.block_number = usage.block_number
             )
-            if delete_cursor.rowcount == 1:
-                used_bytes -= int(data_length)
+            DELETE FROM cache_blocks
+            WHERE (object_key, block_size, block_number) IN (
+                SELECT object_key, block_size, block_number
+                FROM eviction_order
+                WHERE cumulative - data_length < ?
+            )
+            RETURNING object_key, block_size, block_number, length(data)
+            """,
+            (over,),
+        ).fetchall()
+        if not deleted_rows:
+            return used_bytes
 
-        return max(used_bytes, 0)
+        freed_bytes = 0
+        deleted_keys: list[tuple[object, object, object]] = []
+        for object_key, block_size, block_number, data_length in deleted_rows:
+            freed_bytes += int(data_length)
+            deleted_keys.append((object_key, block_size, block_number))
+        self.write_connection.executemany(
+            """
+            DELETE FROM cache_block_usage
+            WHERE object_key = ? AND block_size = ? AND block_number = ?
+            """,
+            deleted_keys,
+        )
+        return max(used_bytes - freed_bytes, 0)
 
-    def _used_bytes(self) -> int:
+    def _used_bytes(self, connection: sqlite3.Connection) -> int:
         """Return the tracked number of cached data bytes."""
-        row = self.connection.execute(
+        row = connection.execute(
             "SELECT used_bytes FROM cache_state WHERE id = 1"
         ).fetchone()
         if row is None:
@@ -468,12 +591,17 @@ class _LFUCacheReader:
         return int(row[0])
 
     def _next_last_used(self) -> int:
-        """Return the current logical access timestamp."""
-        row = self.connection.execute(
-            "SELECT COALESCE(MAX(last_used), 0) FROM cache_blocks"
+        """Return and consume the next logical access timestamp."""
+        row = self.write_connection.execute(
+            """
+            UPDATE cache_state
+            SET last_used = last_used + 1
+            WHERE id = 1
+            RETURNING last_used
+            """
         ).fetchone()
         if row is None:
-            raise sqlite3.DatabaseError("SQLite did not return last_used")
+            raise sqlite3.DatabaseError("Cache state row is missing")
         return int(row[0])
 
     def _validate_block(self, block_number: int, data: object) -> bytes:
