@@ -172,7 +172,7 @@ uploading the database.
 ## Configure the local cache
 
 By default, each VFS uses a persistent LFU cache with 64 KiB blocks and a
-maximum size of 1 GiB. Cached ranges are shared across later connections and
+maximum size of 100 MiB. Cached ranges are shared across later connections and
 are isolated by the remote object's version or ETag.
 
 ```python
@@ -209,7 +209,7 @@ for scans but download more unused data for sparse queries.
 | `fs`               | Required            | Configured `s3fs.S3FileSystem` instance       |
 | `cache`            | `None`              | Custom cache implementation                   |
 | `cache_path`       | Platform cache path | SQLite file used by the default cache         |
-| `cache_size`       | `1 GiB`             | Maximum cached data size in bytes             |
+| `cache_size`       | `100 MiB`           | Maximum cached data size in bytes             |
 | `cache_block_size` | `64 KiB`            | Size of each fetched and cached range         |
 | `file_kwargs`      | `None`              | Extra keyword arguments passed to `fs.open()` |
 
